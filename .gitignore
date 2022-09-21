@@ -46,3 +46,6 @@ runtime/core/grpc/wenet.pb.h
 # Clangd files
 .cache
 compile_commands.json
+
+XSP
+TS
