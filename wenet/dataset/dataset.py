@@ -149,12 +149,27 @@ def Dataset(data_type,
     filter_conf = conf.get('filter_conf', {})
     dataset = Processor(dataset, processor.filter, **filter_conf)
 
+    # Shipeng XIA 2022-05-18
+    # 速度扰动放到perturb统一进行
+    # speed_perturb = conf.get('speed_perturb', False)
+    # if speed_perturb:
+    #     dataset = Processor(dataset, processor.speed_perturb)
+
+    perturb = conf.get('perturb', False)
+    print('perturb', perturb)
+    if perturb:
+        speed_conf = conf.get('speed_conf', {'pitch_shift': False, 'prob': 0.0})
+        pitch_shift_conf = conf.get('pitch_shift_conf', {'pitch_shift': False, 'prob': 0.0})
+
+
+
     resample_conf = conf.get('resample_conf', {})
     dataset = Processor(dataset, processor.resample, **resample_conf)
 
-    speed_perturb = conf.get('speed_perturb', False)
-    if speed_perturb:
-        dataset = Processor(dataset, processor.speed_perturb)
+    save_audio = conf.get('save_audio', False)
+    filepath = conf.get('filepath', None)
+    if save_audio:
+        dataset = Processor(dataset, processor.save_audio, filepath)
 
     feats_type = conf.get('feats_type', 'fbank')
     assert feats_type in ['fbank', 'mfcc']

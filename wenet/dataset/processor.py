@@ -617,3 +617,27 @@ def padding(data):
 
         yield (sorted_keys, padded_feats, padding_labels, feats_lengths,
                label_lengths)
+
+# Shipeng XIA 2022-01-20
+def save_audio(data, filepath):
+    "save audio"
+    for sample in data:
+        assert 'sample_rate' in sample
+        assert 'wav' in sample
+        torchaudio.save(filepath + sample['key']+'.wav', sample['wav'], sample['sample_rate'],
+            encoding='PCM_S', bits_per_sample=16)
+        yield sample
+
+# Shipeng XIA 2022-05-18 (perturb wav)
+def perturb(data,
+            speed_conf,
+            pitch_shift_conf, 
+            volume_conf, 
+            add_noise_conf, noise_source,
+            add_reverb_conf, reverb_source,
+            add_reverb_and_noise_conf, noise_source_1, reverb_source_1,
+            applay_codec_conf, 
+            simulat_a_phone_recoding_conf, noise_source_2, reverb_source_2,
+            time_stretch_conf,
+            add_whitenoise_conf):
+    pass
