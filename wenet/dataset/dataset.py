@@ -20,6 +20,7 @@ from torch.utils.data import IterableDataset
 
 import wenet.dataset.processor as processor
 from wenet.utils.file_utils import read_lists
+from wenet.dataset.lmdb_data import LmdbData
 
 
 class Processor(IterableDataset):
@@ -115,7 +116,6 @@ class DataList(IterableDataset):
             data.update(sampler_info)
             yield data
 
-
 def Dataset(data_type,
             data_list_file,
             symbol_table,
@@ -145,23 +145,51 @@ def Dataset(data_type,
         dataset = Processor(dataset, processor.parse_raw)
 
     dataset = Processor(dataset, processor.tokenize, symbol_table, bpe_model,
-                        non_lang_syms, conf.get('split_with_space', False))
+                        non_lang_syms, conf.get('split_with_space', False), 
+                        conf.get('convert_to_pinyin', False),
+                        conf.get('no_tone', False))
     filter_conf = conf.get('filter_conf', {})
     dataset = Processor(dataset, processor.filter, **filter_conf)
 
     # Shipeng XIA 2022-05-18
-    # 速度扰动放到perturb统一进行
-    # speed_perturb = conf.get('speed_perturb', False)
-    # if speed_perturb:
-    #     dataset = Processor(dataset, processor.speed_perturb)
-
-    perturb = conf.get('perturb', False)
-    print('perturb', perturb)
-    if perturb:
-        speed_conf = conf.get('speed_conf', {'pitch_shift': False, 'prob': 0.0})
+    perturb_wav = conf.get('perturb_wav', False)
+    if perturb_wav:
+        augtype_conf = conf.get('augtype_conf', {'augtypes':None})
+        speed_conf = conf.get('speed_conf', {'speed_perturb': False, 'prob': 0.0})
         pitch_shift_conf = conf.get('pitch_shift_conf', {'pitch_shift': False, 'prob': 0.0})
-
-
+        volume_conf = conf.get('volume_conf', {'volume_perturb': False, 'prob': 0.0})
+        add_noise_conf = conf.get('add_noise_conf', {'add_noise': False, 'prob': 0.0})
+        if add_noise_conf['add_noise']:
+            noise_data = LmdbData(add_noise_conf['noise_lmdb_file'])
+        else: 
+            noise_data = None
+        add_reverb_conf = conf.get('add_reverb_conf', {'add_reverb': False, 'prob': 0.0})
+        if add_reverb_conf['add_reverb']:
+            reverb_data = LmdbData(add_reverb_conf['reverb_lmdb_file'])
+        else:
+            reverb_data = None
+        add_reverb_and_noise_conf = conf.get('add_reverb_and_noise_conf', {'add_reverb_and_noise': False, 'prob': 0.0})
+        if add_reverb_and_noise_conf['add_reverb_and_noise']:
+            noise_data_1 = LmdbData(add_noise_conf['noise_lmdb_file'])
+            reverb_data_1 = LmdbData(add_reverb_conf['reverb_lmdb_file'])
+        else:
+            noise_data_1 = None
+            reverb_data_1 = None
+        applay_codec_conf = conf.get('applay_codec_conf', {'applay_codec': False, 'prob': 0.0})
+        simulat_a_phone_recoding_conf = conf.get('simulat_a_phone_recoding_conf', {'simulat_a_phone_recoding': False, 'prob': 0.0})
+        if simulat_a_phone_recoding_conf['simulat_a_phone_recoding']:
+            noise_data_2 = LmdbData(add_noise_conf['noise_lmdb_file'])
+            reverb_data_2 = LmdbData(add_reverb_conf['reverb_lmdb_file'])
+        else:
+            noise_data_2 = None
+            reverb_data_2 = None
+        time_stretch_conf = conf.get('time_stretch_conf', {'time_stretch': False, 'prob': 0.0})
+        add_whitenoise_conf = conf.get('add_whitenoise_conf', {'add_whitenoise': False, 'prob': 0.0})
+        dataset = Processor(dataset, processor.perturb, augtype_conf, speed_conf, pitch_shift_conf, volume_conf,
+                            add_noise_conf, noise_data, add_reverb_conf, reverb_data,
+                            add_reverb_and_noise_conf, noise_data_1, reverb_data_1,
+                            applay_codec_conf, simulat_a_phone_recoding_conf, noise_data_2, reverb_data_2,
+                            time_stretch_conf, add_whitenoise_conf)
 
     resample_conf = conf.get('resample_conf', {})
     dataset = Processor(dataset, processor.resample, **resample_conf)
@@ -170,6 +198,7 @@ def Dataset(data_type,
     filepath = conf.get('filepath', None)
     if save_audio:
         dataset = Processor(dataset, processor.save_audio, filepath)
+
 
     feats_type = conf.get('feats_type', 'fbank')
     assert feats_type in ['fbank', 'mfcc']

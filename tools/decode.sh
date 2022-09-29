@@ -11,6 +11,7 @@ chunk_size=-1
 ctc_weight=0.0
 reverse_weight=0.0
 rescoring_weight=1.0
+sample_rate=16000
 # For CTC WFST based decoding
 fst_path=
 dict_path=
@@ -65,6 +66,7 @@ fi
 for n in $(seq ${nj}); do
 {
   decoder_main \
+     --sample_rate $sample_rate \
      --rescoring_weight $rescoring_weight \
      --ctc_weight $ctc_weight \
      --reverse_weight $reverse_weight \

@@ -18,6 +18,7 @@ import argparse
 import copy
 import logging
 import os
+import time
 
 import torch
 import torch.distributed as dist
@@ -34,6 +35,9 @@ from wenet.utils.file_utils import read_symbol_table, read_non_lang_symbols
 from wenet.utils.scheduler import WarmupLR
 from wenet.utils.config import override_config
 from wenet.utils.init_model import init_model
+from wenet.utils.logger import init_logger
+
+torch.multiprocessing.set_sharing_strategy('file_system')
 
 def get_args():
     parser = argparse.ArgumentParser(description='training your network')
@@ -124,6 +128,11 @@ def get_args():
 
 def main():
     args = get_args()
+    model_dir = args.model_dir
+    os.makedirs(model_dir, exist_ok=True)
+    now_time = time.strftime('%Y%m%d%H%M%S',time.localtime())
+    logger = init_logger(log_file=os.path.join(args.model_dir, now_time+'_train.log'))
+    logger.info(args)
     logging.basicConfig(level=logging.DEBUG,
                         format='%(asctime)s %(levelname)s %(message)s')
     os.environ['CUDA_VISIBLE_DEVICES'] = str(args.gpu)
@@ -146,11 +155,14 @@ def main():
     symbol_table = read_symbol_table(args.symbol_table)
 
     train_conf = configs['dataset_conf']
+    logger.info('train_conf:{}'.format(train_conf))
     cv_conf = copy.deepcopy(train_conf)
     cv_conf['speed_perturb'] = False
     cv_conf['spec_aug'] = False
     cv_conf['spec_sub'] = False
     cv_conf['shuffle'] = False
+    cv_conf['perturb_wav'] = False
+    cv_conf['save_audio'] = False
     non_lang_syms = read_non_lang_symbols(args.non_lang_syms)
 
     train_dataset = Dataset(args.data_type, args.train_data, symbol_table,
@@ -173,6 +185,10 @@ def main():
                                 pin_memory=args.pin_memory,
                                 num_workers=args.num_workers,
                                 prefetch_factor=args.prefetch)
+    # # # # 异步并行
+    # train_data_loader = CudaDataLoader(train_data_loader, args.gpu)
+    # cv_data_loader = CudaDataLoader(cv_data_loader, args.gpu)
+
 
     if 'fbank_conf' in configs['dataset_conf']:
         input_dim = configs['dataset_conf']['fbank_conf']['num_mel_bins']
@@ -193,9 +209,10 @@ def main():
 
     # Init asr model from configs
     model = init_model(configs)
-    print(model)
-    num_params = sum(p.numel() for p in model.parameters())
-    print('the number of model params: {}'.format(num_params))
+    if args.rank == 0:
+        logger.info('{}'.format(model))
+        num_params = sum(p.numel() for p in model.parameters())
+        print('the number of model params: {}'.format(num_params))
 
     # !!!IMPORTANT!!!
     # Try to export the model by script, if fails, we should refine
@@ -217,10 +234,8 @@ def main():
     step = infos.get('step', -1)
 
     num_epochs = configs.get('max_epoch', 100)
-    model_dir = args.model_dir
     writer = None
     if args.rank == 0:
-        os.makedirs(model_dir, exist_ok=True)
         exp_id = os.path.basename(model_dir)
         writer = SummaryWriter(os.path.join(args.tensorboard_dir, exp_id))
 

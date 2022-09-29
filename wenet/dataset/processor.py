@@ -25,7 +25,15 @@ import torchaudio
 import torchaudio.compliance.kaldi as kaldi
 from torch.nn.utils.rnn import pad_sequence
 
-AUDIO_FORMAT_SETS = set(['flac', 'mp3', 'm4a', 'ogg', 'opus', 'wav', 'wma'])
+import io
+import numpy as np
+from scipy import signal
+from scipy.io import wavfile
+import torchaudio.transforms as T
+
+from pypinyin import lazy_pinyin, Style
+
+AUDIO_FORMAT_SETS = set(['flac', 'mp3', 'm4a', 'ogg', 'opus', 'wav', 'wma', 'WAV'])
 
 
 def url_opener(data):
@@ -346,7 +354,9 @@ def tokenize(data,
              symbol_table,
              bpe_model=None,
              non_lang_syms=None,
-             split_with_space=False):
+             split_with_space=False,
+             convert_to_pinyin=False,
+             no_tone=False):
     """ Decode text to chars or BPE
         Inplace operation
 
@@ -368,6 +378,7 @@ def tokenize(data,
         sp.load(bpe_model)
     else:
         sp = None
+    
 
     for sample in data:
         assert 'txt' in sample
@@ -389,6 +400,11 @@ def tokenize(data,
                 else:
                     if split_with_space:
                         part = part.split(" ")
+                    if convert_to_pinyin:
+                        if no_tone:
+                            part = lazy_pinyin(part,style=Style.NORMAL)
+                        else:
+                            part = lazy_pinyin(part, style=Style.TONE3, neutral_tone_with_five=True)
                     for ch in part:
                         if ch == ' ':
                             ch = "▁"
@@ -630,6 +646,7 @@ def save_audio(data, filepath):
 
 # Shipeng XIA 2022-05-18 (perturb wav)
 def perturb(data,
+            augtype_conf,
             speed_conf,
             pitch_shift_conf, 
             volume_conf, 
@@ -640,4 +657,300 @@ def perturb(data,
             simulat_a_phone_recoding_conf, noise_source_2, reverb_source_2,
             time_stretch_conf,
             add_whitenoise_conf):
-    pass
+    # 设置随机种子为None
+    random.seed(None)
+    np.random.seed(None)
+    for sample in data:
+        assert 'sample_rate' in sample
+        assert 'wav' in sample
+
+        # print('key', sample['key'])
+        if augtype_conf is not None:
+            augtype = random.choice(augtype_conf['augtypes'])   # 在指定的几种里面随机
+        else:
+            augtype = random.randint(0, 9) # 随机0~9种
+        # print('augtype', augtype)
+        aug_prob = random.random()
+        # print('aug_prob', aug_prob)
+        
+        if augtype == 0 and speed_conf['speed_perturb'] and aug_prob < speed_conf['prob']:
+            # speed_perturb
+            if speed_conf['speeds'] is None:
+                speeds = [0.9, 1.0, 1.1]
+            else:
+                speeds = speed_conf['speeds']
+            # print('speeds',speeds)
+            speed = random.choice(speeds)
+            # print('speed', speed)
+            if speed != 1.0:
+                wav, _ = torchaudio.sox_effects.apply_effects_tensor(
+                    sample['wav'], sample['sample_rate'],
+                    [['speed', str(speed)], ['rate', str(sample['sample_rate'])]])
+                sample['wav'] = wav
+        
+        elif augtype == 1 and pitch_shift_conf['pitch_shift'] and aug_prob < pitch_shift_conf['prob']:
+            # pitch_shift
+            # print('pitch_shift', pitch_shift_conf['pitch_shift'])
+            pitch = random.randint(pitch_shift_conf['pitchs'][0], pitch_shift_conf['pitchs'][1])
+            # print('pitch', pitch)
+            wav, _ = torchaudio.sox_effects.apply_effects_tensor(
+                sample['wav'], sample['sample_rate'],
+                [['pitch',str(pitch)],['rate',str(sample['sample_rate'])]])
+            sample['wav'] = wav
+
+        elif augtype == 2 and volume_conf['volume_perturb'] and aug_prob < volume_conf['prob']:
+            # volume_perturb
+            # print('volume_perturb', volume_conf['volume_perturb'])
+            volume = random.uniform(volume_conf['volumes'][0], volume_conf['volumes'][1])
+            # print('volume', volume)
+            if volume != 1.0:
+                wav, _ = torchaudio.sox_effects.apply_effects_tensor(
+                    sample['wav'], sample['sample_rate'], [['vol', str(volume)]])
+                sample['wav'] = wav
+
+        elif augtype == 3 and add_noise_conf['add_noise'] and aug_prob < add_noise_conf['prob']:
+            # add noise
+            audio = sample['wav'].numpy()[0]
+            audio_len = audio.shape[0]
+            audio_db = 10 * np.log10(np.mean(audio**2) + 1e-4)
+
+            key, noise_data = noise_source.random_one()
+            # print('noise key', key)
+            if key.startswith('noise'):
+                snr_range = [0, 15]
+            elif key.startswith('speech'):
+                snr_range = [3, 30]
+            elif key.startswith('music'):
+                snr_range = [5, 15]
+            else:
+                snr_range = [0, 15]
+            _, noise_audio = wavfile.read(io.BytesIO(noise_data))
+            noise_audio = noise_audio.astype(np.float32)
+            if noise_audio.shape[0] > audio_len:
+                start = random.randint(0, noise_audio.shape[0] - audio_len)
+                noise_audio = noise_audio[start:start + audio_len]
+            else:
+                # Resize will repeat copy
+                noise_audio = np.resize(noise_audio, (audio_len, ))
+            noise_snr = random.uniform(snr_range[0], snr_range[1])
+            # print('noise_snr',noise_snr)
+            noise_db = 10 * np.log10(np.mean(noise_audio**2) + 1e-4)
+            noise_audio = np.sqrt(10**(
+                (audio_db - noise_db - noise_snr) / 10)) * noise_audio
+            out_audio = audio + noise_audio
+            out_audio = torch.from_numpy(out_audio)
+            out_audio = torch.unsqueeze(out_audio, 0)
+            sample['wav'] = out_audio
+
+        elif augtype == 4 and add_reverb_conf['add_reverb'] and aug_prob < add_reverb_conf['prob']:
+            # add reverb
+            audio = sample['wav'].numpy()[0]
+            audio_len = audio.shape[0]
+            _, rir_data = reverb_source.random_one()
+            # print('reverb key', _)
+            rir_io = io.BytesIO(rir_data)
+            _, rir_audio = wavfile.read(rir_io)
+            rir_audio = rir_audio.astype(np.float32)
+            rir_audio = rir_audio / np.sqrt(np.sum(rir_audio**2))
+            out_audio = signal.convolve(audio, rir_audio,
+                                        mode='full')[:audio_len]
+            out_audio = torch.from_numpy(out_audio)
+            out_audio = torch.unsqueeze(out_audio, 0)
+            sample['wav'] = out_audio
+
+        elif augtype == 5 and add_reverb_and_noise_conf['add_reverb_and_noise'] and aug_prob < add_reverb_and_noise_conf['prob']:
+            # add noise and reverb
+            noise_source = noise_source_1
+            reverb_source = reverb_source_1
+            # rir perturb
+            sample_rate = sample['sample_rate']
+            audio = sample['wav'].numpy()[0]
+            audio_len = audio.shape[0]
+            aug_prob = random.random()
+            if aug_prob < 0.5:
+                _, rir_data = reverb_source.random_one()
+                # print('reverb key', _)
+                rir_io = io.BytesIO(rir_data)
+                _, rir_audio = wavfile.read(rir_io)
+                rir_audio = rir_audio.astype(np.float32)
+                rir_audio = rir_audio / np.sqrt(np.sum(rir_audio**2))
+                out_audio = signal.convolve(audio, rir_audio, mode='full')[:audio_len]
+                audio_len = out_audio.shape[0]
+            else:
+                out_audio = audio
+                audio_len = out_audio.shape[0]
+            # perturb with foreground noise
+            audio_db = 10 * np.log10(np.mean(out_audio**2) + 1e-4)
+            key, noise_data = noise_source.random_one()
+            # print('foreground noise key', key)
+            _, noise_audio = wavfile.read(io.BytesIO(noise_data))
+            noise_audio = noise_audio.astype(np.float32)
+            noise_db = 10 * np.log10(np.mean(noise_audio**2) + 1e-4)
+            noise_snr = random.uniform(0, 50)  # foreground noise snr 0~50
+            # print('foreground noise snr', noise_snr)
+            n_additions = random.randint(1, 5)  # foreground noise max additions 5
+            # print('n_addtitions', n_additions)
+            for i in range(0, n_additions):
+                noise_dur = random.uniform(0.0, 2.0)  # max_noise_duration = 2.0
+                start_time = random.uniform(0.0, noise_dur)
+                start_sample = int(round(start_time * sample_rate))
+                end_sample = int(round(min(2.0, (start_time + noise_dur)) * sample_rate))
+                noise_samples = np.copy(noise_audio[start_sample:end_sample])
+                noise_samples = np.sqrt(10**(
+                    (audio_db - noise_db - noise_snr) / 10)) * noise_samples
+                noise_len = noise_samples.shape[0]
+                if noise_len > audio_len:
+                    noise_samples = noise_samples[0 : audio_len]
+                    noise_len = noise_samples.shape[0]
+                noise_idx = random.randint(0, audio_len - noise_len)
+                # print('noise_idx', noise_idx)
+                out_audio[noise_idx : noise_idx + noise_len] += noise_samples
+            # perturb with background noise
+            audio_len = out_audio.shape[0]
+            key, noise_data = noise_source.random_one()
+            # print('background noise key', key)
+            _, noise_audio = wavfile.read(io.BytesIO(noise_data))
+            noise_audio = noise_audio.astype(np.float32)
+            if noise_audio.shape[0] > audio_len:
+                start = random.randint(0, noise_audio.shape[0] - audio_len)
+                noise_audio = noise_audio[start:start + audio_len]
+            else:
+                # Resize will repeat copy
+                noise_audio = np.resize(noise_audio, (audio_len, ))
+            noise_db = 10 * np.log10(np.mean(noise_audio**2) + 1e-4)
+            noise_snr = random.uniform(5, 50)  # background noise snr 5~50
+            # print('background noise snr', noise_snr)
+            noise_audio = np.sqrt(10**(
+                (audio_db - noise_db - noise_snr) / 10)) * noise_audio
+            out_audio = out_audio + noise_audio
+            out_audio = torch.from_numpy(out_audio)
+            out_audio = torch.unsqueeze(out_audio, 0)
+            sample['wav'] = out_audio
+
+        elif augtype == 6 and applay_codec_conf['applay_codec'] and aug_prob < applay_codec_conf['prob']:
+            # applay codec
+            param = random.choice(applay_codec_conf['codecs'])
+            # print('param', param)
+            wav = sample['wav']
+            # print(wav.size())
+            if param['format'] == 'gsm' and sample['sample_rate'] != 8000:
+                # gsm format only supports a sampling rate of 8kHz
+                wav = torchaudio.transforms.Resample(orig_freq=sample['sample_rate'], new_freq=8000)(wav)
+                wav = torchaudio.functional.apply_codec(wav, 8000, **param)
+                wav = torchaudio.transforms.Resample(orig_freq=8000, new_freq=sample['sample_rate'])(wav)
+                # NOTE: 16k的时候gsm编码完采样会上升，需要降回16k
+                #       8k的时候不会改变采样，其他采样待验证
+                # wav = torchaudio.transforms.Resample(orig_freq=sample['sample_rate']*2, new_freq=sample['sample_rate'])(wav)
+            else:
+                wav = torchaudio.functional.apply_codec(wav, sample['sample_rate'], **param)
+            sample['wav'] = wav
+
+        elif augtype == 7 and simulat_a_phone_recoding_conf['simulat_a_phone_recoding'] and aug_prob < simulat_a_phone_recoding_conf['prob']:
+            # simulat a phone recoding
+            audio = sample['wav'].numpy()[0]
+            sample_rate = sample['sample_rate']
+            noise_source = noise_source_2
+            reverb_source = reverb_source_2
+            # 原始不是8k的数据的时候才使用
+            if sample_rate != 8000:
+                # applay RIR
+                audio_len = audio.shape[0]
+                _, rir_data = reverb_source.random_one()
+                # print('reverb key', _)
+                rir_io = io.BytesIO(rir_data)
+                _, rir_audio = wavfile.read(rir_io)
+                rir_audio = rir_audio.astype(np.float32)
+                rir_audio = rir_audio / np.sqrt(np.sum(rir_audio**2))
+                rir_applied = signal.convolve(audio, rir_audio,
+                                            mode='full')[:audio_len]
+                audio_len = rir_applied.shape[0]
+                audio_db = 10 * np.log10(np.mean(rir_applied**2) + 1e-4)
+             
+                # Add background noise
+                # Because the noise is recorded in the actual environment, we consider that
+                # the noise contains the acoustic feature of the environment. Therefore, we add
+                # the noise after RIR application.
+                noise_snr = random.uniform(2, 20)  # background noise snr 2~20
+                # print('noise_snr', noise_snr)
+                key, noise_data = noise_source.random_one()
+                _, noise_audio = wavfile.read(io.BytesIO(noise_data))
+                noise_audio = noise_audio.astype(np.float32)
+                if noise_audio.shape[0] > audio_len:
+                    start = random.randint(0, noise_audio.shape[0] - audio_len)
+                    noise_audio = noise_audio[start:start + audio_len]
+                else:
+                    # Resize will repeat copy
+                    noise_audio = np.resize(noise_audio, (audio_len, ))
+                noise_db = 10 * np.log10(np.mean(noise_audio**2) + 1e-4)
+                noise_audio = np.sqrt(10**(
+                    (audio_db - noise_db - noise_snr) / 10)) * noise_audio
+                bg_added = rir_applied + noise_audio
+                bg_added = torch.from_numpy(bg_added)
+                bg_added = torch.unsqueeze(bg_added, 0)
+                # Apply filtering and change sample rate
+                filtered, sample_rate2 = torchaudio.sox_effects.apply_effects_tensor(
+                    bg_added,
+                    sample_rate,
+                    effects=[
+                        ["lowpass", "4000"],
+                        [
+                            "compand",
+                            "0.02,0.05",
+                            "-60,-60,-30,-10,-20,-8,-5,-8,-2,-8",
+                            "-8",
+                            "-7",
+                            "0.05",
+                        ],
+                        ["rate", "8000"],
+                    ],
+                )
+                # Apply telephony codec
+                # 编码是否需要修改为其他的？
+                codec_applied = torchaudio.functional.apply_codec(filtered, sample_rate2, format="gsm")
+                sample['wav'] = codec_applied
+                sample['sample_rate'] = sample_rate2
+        
+        elif augtype == 8 and time_stretch_conf['time_stretch'] and aug_prob < time_stretch_conf['prob']:
+            # Time Stretch
+            # 比较耗时
+            if time_stretch_conf['rates'] is None:
+                rates = [0.9, 1.0, 1.1]
+            else:
+                rates = time_stretch_conf['rates']
+            # print('rates',rates)
+            rate = random.choice(rates)
+            # print('rate', rate)
+
+            sample_rate = sample['sample_rate']
+            audio = sample['wav']
+            if rate != 1.0:
+                n_fft= sample_rate // 64
+                hop_length = n_fft // 32
+
+                output = torch.stft(audio, n_fft, hop_length)[None, ...]
+                # print(output.size())
+                
+                stretcher = T.TimeStretch(
+                    fixed_rate=float(rate), n_freq=output.shape[2], hop_length=hop_length)
+                output = stretcher(output)
+                output = torch.istft(output[0], n_fft, hop_length)
+                output = output.reshape(audio.shape[0], output.shape[1])
+                sample['wav'] = output
+        
+        elif augtype == 9 and add_whitenoise_conf['add_whitenoise'] and aug_prob < add_whitenoise_conf['prob']:
+            # add whitenoise
+            min_level = -90
+            max_level = -46
+            audio = sample['wav'].numpy()[0]
+            audio_len = audio.shape[0]
+            noise_level_db = np.random.randint(min_level, max_level)
+            # print('noise_level_db',noise_level_db)
+            noise_signal = np.random.randn(audio_len) * (10.0 ** (noise_level_db / 20.0))
+            noise_signal = noise_signal.astype(np.float32)
+            out_audio = audio + noise_signal
+            out_audio = torch.from_numpy(out_audio)
+            out_audio = torch.unsqueeze(out_audio, 0)
+            sample['wav'] = out_audio
+        
+        yield sample
+   
