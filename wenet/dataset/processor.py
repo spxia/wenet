@@ -400,16 +400,16 @@ def tokenize(data,
                 else:
                     if split_with_space:
                         part = part.split(" ")
-                    if convert_to_pinyin:
-                        if no_tone:
-                            part = lazy_pinyin(part,style=Style.NORMAL)
-                        else:
-                            part = lazy_pinyin(part, style=Style.TONE3, neutral_tone_with_five=True)
                     for ch in part:
                         if ch == ' ':
                             ch = "▁"
                         tokens.append(ch)
 
+        if convert_to_pinyin:
+            if no_tone:
+                tokens = lazy_pinyin(tokens, style=Style.NORMAL)
+            else:
+                tokens = lazy_pinyin(tokens, style=Style.TONE3, neutral_tone_with_five=True)
         for ch in tokens:
             if ch in symbol_table:
                 label.append(symbol_table[ch])

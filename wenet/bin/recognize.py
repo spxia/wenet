@@ -19,6 +19,7 @@ import copy
 import logging
 import os
 import sys
+import time
 
 import torch
 import yaml
@@ -134,6 +135,12 @@ def get_args():
 
 def main():
     args = get_args()
+    now_time = time.strftime('%Y%m%d%H%M%S',time.localtime())
+    result_dir = os.path.dirname(args.result_file)
+    os.makedirs(result_dir, exist_ok=True)
+    log_file=os.path.join(result_dir, now_time + '_recognize.log')
+    with open(log_file, 'w') as fout:
+        fout.write('{}'.format(args))
     logging.basicConfig(level=logging.DEBUG,
                         format='%(asctime)s %(levelname)s %(message)s')
     os.environ['CUDA_VISIBLE_DEVICES'] = str(args.gpu)

@@ -185,10 +185,6 @@ def main():
                                 pin_memory=args.pin_memory,
                                 num_workers=args.num_workers,
                                 prefetch_factor=args.prefetch)
-    # # # # 异步并行
-    # train_data_loader = CudaDataLoader(train_data_loader, args.gpu)
-    # cv_data_loader = CudaDataLoader(cv_data_loader, args.gpu)
-
 
     if 'fbank_conf' in configs['dataset_conf']:
         input_dim = configs['dataset_conf']['fbank_conf']['num_mel_bins']
